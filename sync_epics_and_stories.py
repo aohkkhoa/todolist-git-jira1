@@ -16,18 +16,26 @@ def parse_markdown_with_front_matter(filepath):
         print(f"Không tìm thấy file: {filepath}")
         return None, None
         
-    with open(filepath, "r", encoding="utf-8") as f:
+    # 1. Sử dụng utf-8-sig để tự động lọc sạch ký tự ẩn BOM (\uFEFF) của Windows
+    with open(filepath, "r", encoding="utf-8-sig") as f:
         content = f.read()
     
-    match = re.match(r"^---\s*\n(.*?)\n---\s*\n(.*)", content, re.DOTALL)
-    if not match:
-        return {}, content
+    # 2. Chuẩn hóa dấu xuống dòng Windows (\r\n) về định dạng chuẩn Linux (\n)
+    content = content.replace("\r\n", "\n")
     
-    yaml_text = match.group(1)
-    body = match.group(2)
-    
-    metadata = yaml.safe_load(yaml_text) or {}
-    return metadata, body
+    # 3. Tách Front Matter một cách an toàn bằng phương pháp Split (không dùng Regex)
+    parts = content.split("---\n")
+    if len(parts) >= 3 and content.startswith("---"):
+        yaml_text = parts[1]
+        body = "---\n".join(parts[2:]).strip()
+        try:
+            metadata = yaml.safe_load(yaml_text) or {}
+            return metadata, body
+        except Exception as e:
+            print(f"Lỗi cú pháp YAML trong Front Matter: {e}")
+            return {}, content
+            
+    return {}, content
 
 def extract_epics(markdown_body):
     """Trích xuất Epic từ mục ## Epic List"""
