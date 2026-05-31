@@ -5,25 +5,22 @@ import requests
 from requests.auth import HTTPBasicAuth
 
 JIRA_URL = os.environ.get("JIRA_URL")
-JIRA_EMAIL = os.environ.get("JIRA_EMAIL")
+JIRA_EMAIL = os.environ.get("EMAIL")
 JIRA_API_TOKEN = os.environ.get("JIRA_API_TOKEN")
 
-FILE_PATH = "jira-tasks/epic-breakdown.md" # Đường dẫn file của bạn
+FILE_PATH = "jira-tasks/epic-breakdown.md" # Sửa lại cho đúng đường dẫn file .md của bạn nếu đặt ở root
 
 def parse_markdown_with_front_matter(filepath):
-    """Đọc file và tách Front Matter với phần Body"""
+    """Đọc file, tự động loại bỏ ký tự BOM ẩn và dấu xuống dòng Windows (CRLF)"""
     if not os.path.exists(filepath):
         print(f"Không tìm thấy file: {filepath}")
         return None, None
         
-    # 1. Sử dụng utf-8-sig để tự động lọc sạch ký tự ẩn BOM (\uFEFF) của Windows
     with open(filepath, "r", encoding="utf-8-sig") as f:
         content = f.read()
     
-    # 2. Chuẩn hóa dấu xuống dòng Windows (\r\n) về định dạng chuẩn Linux (\n)
     content = content.replace("\r\n", "\n")
     
-    # 3. Tách Front Matter một cách an toàn bằng phương pháp Split (không dùng Regex)
     parts = content.split("---\n")
     if len(parts) >= 3 and content.startswith("---"):
         yaml_text = parts[1]
@@ -76,32 +73,27 @@ def extract_stories(markdown_body):
     """Trích xuất Story từ Functional Requirements và FR Coverage Map"""
     stories = []
     
-    # 1. Lấy mô tả tiếng Việt từ Functional Requirements
     fr_descriptions = {}
     fr_match = re.search(r"###\s+Functional\s+Requirements\n(.*?)(?=\n###|\Z)", markdown_body, re.DOTALL | re.IGNORECASE)
     if fr_match:
         lines = fr_match.group(1).strip().split("\n")
         for line in lines:
-            # Match dạng "FR1: Người dùng có thể..."
             m = re.match(r"^(FR\d+):\s*(.*)", line.strip())
             if m:
                 fr_id = m.group(1)
                 fr_desc = m.group(2).strip()
                 fr_descriptions[fr_id] = fr_desc
 
-    # 2. Lấy ánh xạ Epic và Summary tiếng Anh từ FR Coverage Map
     coverage_match = re.search(r"###\s+FR\s+Coverage\s+Map\n(.*?)(?=\n###|\Z)", markdown_body, re.DOTALL | re.IGNORECASE)
     if coverage_match:
         lines = coverage_match.group(1).strip().split("\n")
         for line in lines:
-            # Match dạng "FR1: Epic 1 - Enable users to..."
             m = re.match(r"^(FR\d+):\s*(Epic\s*\d+)\s*-\s*(.*)", line.strip())
             if m:
                 fr_id = m.group(1)
-                epic_ref = m.group(2).strip() # "Epic 1"
+                epic_ref = m.group(2).strip()
                 summary_en = m.group(3).strip()
                 
-                # Mô tả kết hợp cả tiếng Anh và tiếng Việt cho rõ ràng trên Jira
                 desc_vi = fr_descriptions.get(fr_id, "")
                 full_description = f"{desc_vi}\n\n*English Specs:* {summary_en}" if desc_vi else summary_en
                 
@@ -129,7 +121,6 @@ def sync_all():
         print("Lỗi: Thiếu 'projectKey' trong Front Matter.")
         return
 
-    # Khởi tạo cấu trúc lưu trữ khóa Jira trong Front Matter
     if "jiraKeys" not in metadata:
         metadata["jiraKeys"] = {}
     if "epics" not in metadata["jiraKeys"]:
@@ -144,45 +135,64 @@ def sync_all():
     # ================= PART 1: ĐỒNG BỘ EPIC =================
     epics = extract_epics(body)
     for epic in epics:
-        epic_id = epic["id"] # Ví dụ: "Epic 1"
+        epic_id = epic["id"]
         existing_epic_key = metadata["jiraKeys"]["epics"].get(epic_id)
         
+        # Payload mặc định kèm trường customfield_10011 (Epic Name) cho Classic project
         payload_epic = {
             "fields": {
                 "project": {"key": project_key},
                 "summary": epic["summary"],
                 "description": epic["description"],
-                "issuetype": {"name": "Epic"}
+                "issuetype": {"name": "Epic"},
+                "customfield_10011": epic["summary"] # Epic Name Field
             }
         }
         
         if existing_epic_key:
             print(f"Cập nhật {epic_id} ({existing_epic_key})...")
             url = f"{JIRA_URL}/rest/api/2/issue/{existing_epic_key}"
-            requests.put(url, headers=headers, auth=auth, json={
-                "fields": {"summary": epic["summary"], "description": epic["description"]}
+            res = requests.put(url, headers=headers, auth=auth, json={
+                "fields": {
+                    "summary": epic["summary"], 
+                    "description": epic["description"],
+                    "customfield_10011": epic["summary"]
+                }
             })
+            if res.status_code != 204:
+                # Nếu update lỗi do customfield_10011, thử lại không có nó
+                if "customfield_10011" in res.text:
+                    requests.put(url, headers=headers, auth=auth, json={
+                        "fields": {"summary": epic["summary"], "description": epic["description"]}
+                    })
         else:
             print(f"Tạo mới {epic_id} trên Jira...")
             url = f"{JIRA_URL}/rest/api/2/issue"
             res = requests.post(url, headers=headers, auth=auth, json=payload_epic)
+            
+            # Thử lại không có customfield_10011 nếu Jira báo lỗi không hỗ trợ trường này (Team-managed)
+            if res.status_code != 201 and "customfield_10011" in res.text:
+                print(f"-> Thử lại tạo mới {epic_id} không có trường Epic Name (Team-managed)...")
+                payload_epic["fields"].pop("customfield_10011", None)
+                res = requests.post(url, headers=headers, auth=auth, json=payload_epic)
+                
             if res.status_code == 201:
                 new_key = res.json()["key"]
                 metadata["jiraKeys"]["epics"][epic_id] = new_key
                 has_changes = True
-                print(f"Đã tạo Epic {epic_id} -> {new_key}")
+                print(f"✅ Đã tạo Epic {epic_id} -> {new_key}")
+            else:
+                print(f"❌ Lỗi khi tạo Epic {epic_id}: {res.status_code} - {res.text}")
 
-    # Đọc lại metadata để chắc chắn các Epic Key mới đã được áp dụng cho phần Story tiếp theo
     epic_keys_map = metadata["jiraKeys"]["epics"]
 
     # ================= PART 2: ĐỒNG BỘ STORY =================
     stories = extract_stories(body)
     for story in stories:
-        story_id = story["id"] # Ví dụ: "FR1"
-        epic_ref = story["epic_ref"] # Ví dụ: "Epic 1"
+        story_id = story["id"]
+        epic_ref = story["epic_ref"]
         existing_story_key = metadata["jiraKeys"]["stories"].get(story_id)
         
-        # Tìm Jira Key của Epic cha tương ứng
         parent_epic_key = epic_keys_map.get(epic_ref)
         
         payload_story = {
@@ -193,7 +203,6 @@ def sync_all():
                 "issuetype": {"name": "Story"}
             }
         }
-        # Gắn Story vào Epic tương ứng
         if parent_epic_key:
             payload_story["fields"]["parent"] = {"key": parent_epic_key}
             
@@ -210,7 +219,9 @@ def sync_all():
             if parent_epic_key:
                 update_payload["fields"]["parent"] = {"key": parent_epic_key}
                 
-            requests.put(url, headers=headers, auth=auth, json=update_payload)
+            res = requests.put(url, headers=headers, auth=auth, json=update_payload)
+            if res.status_code != 204:
+                print(f"❌ Lỗi khi cập nhật Story {story_id}: {res.status_code} - {res.text}")
         else:
             print(f"Tạo mới Story {story_id} liên kết với {epic_ref} ({parent_epic_key})...")
             url = f"{JIRA_URL}/rest/api/2/issue"
@@ -219,11 +230,13 @@ def sync_all():
                 new_key = res.json()["key"]
                 metadata["jiraKeys"]["stories"][story_id] = new_key
                 has_changes = True
-                print(f"Đã tạo Story {story_id} -> {new_key}")
+                print(f"✅ Đã tạo Story {story_id} -> {new_key}")
+            else:
+                print(f"❌ Lỗi khi tạo Story {story_id}: {res.status_code} - {res.text}")
 
     if has_changes:
         update_markdown_file(FILE_PATH, metadata, body)
-        print("Đã lưu lại toàn bộ khóa Jira của Epic và Story vào file .md.")
+        print("Đã cập nhật toàn bộ khóa Jira thành công.")
 
 if __name__ == "__main__":
     sync_all()
