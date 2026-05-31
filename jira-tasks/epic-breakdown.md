@@ -1,4 +1,5 @@
 ---
+projectKey: "SCRUM" 
 stepsCompleted:
   - 1
   - 2
