@@ -112,6 +112,9 @@ def update_markdown_file(filepath, metadata, body):
         f.write(new_content)
 
 def sync_all():
+    # Thêm dòng này để kiểm tra xem script có nhận được thông tin từ GitHub Secrets không
+    print(f"DEBUG - JIRA_URL: {JIRA_URL}, JIRA_EMAIL: {JIRA_EMAIL}")
+
     metadata, body = parse_markdown_with_front_matter(FILE_PATH)
     if not metadata:
         return
