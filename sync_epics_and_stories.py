@@ -5,7 +5,7 @@ import requests
 from requests.auth import HTTPBasicAuth
 
 JIRA_URL = os.environ.get("JIRA_URL")
-JIRA_EMAIL = os.environ.get("EMAIL")
+JIRA_EMAIL = os.environ.get("JIRA_EMAIL")
 JIRA_API_TOKEN = os.environ.get("JIRA_API_TOKEN")
 
 FILE_PATH = "jira-tasks/epic-breakdown.md" # Sửa lại cho đúng đường dẫn file .md của bạn nếu đặt ở root

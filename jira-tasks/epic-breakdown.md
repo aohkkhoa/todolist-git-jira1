@@ -113,4 +113,3 @@ So that the codebase is ready for building the todo application.
 As a user,
 I want to add a new task with a title and optional description,
 So that I can capture the work I need to do.
-
